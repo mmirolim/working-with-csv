@@ -10,8 +10,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 /*
@@ -52,17 +54,34 @@ var (
 )
 
 func main() {
-	fmt.Println("csv file storage api")
-	err := Setup("companies.csv", false)
+	// truncates file for test pugrposes
+	err := Setup("companies.csv", true)
 	if err != nil {
 		fmt.Println("OpenFile error", err.Error())
 		os.Exit(1)
 	}
+	sigterm := make(chan os.Signal, 1)
+	signal.Notify(sigterm, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		for {
+			select {
+			case <-sigterm:
+				fmt.Println("shutdown wait ...")
+				mu.Lock()
+				csvWriter.Flush()
+				f := storage.(*os.File)
+				f.Sync()
+				f.Close()
+				os.Exit(0)
+			}
+		}
+
+	}()
 
 	http.HandleFunc("/list", ListCompaniesHandler)
 	http.HandleFunc("/add", AddCompanyHandler)
 	http.HandleFunc("/delete", DelCompanyHandler)
-	// TODO register handlers
 
 	log.Fatalln(http.ListenAndServe(":8080", nil))
 }
