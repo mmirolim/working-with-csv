@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -23,20 +24,34 @@ var (
 
 func main() {
 	fmt.Println("csv file storage api")
-	err := Setup("companies.csv")
+	err := Setup("companies.csv", false)
 	if err != nil {
 		fmt.Println("OpenFile error", err.Error())
 		os.Exit(1)
 	}
 
+	http.HandleFunc("/list", ListCompaniesHandler)
+	http.HandleFunc("/add", AddCompanyHandler)
+	http.HandleFunc("/delete", DelCompanyHandler)
+	// TODO register handlers
+
+	log.Fatalln(http.ListenAndServe(":8080", nil))
 }
 
-func Setup(fName string) error {
+// TODO generate index if truncate false
+func Setup(fName string, truncate bool) error {
 	storageIndex.ByINN = map[string]int64{}
 	storageIndex.ByName = map[string]int64{}
 
 	// TODO should not truncate file
-	f, err := os.OpenFile(fName, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+	fileMode := os.O_RDWR | os.O_CREATE
+	if truncate {
+		fileMode |= os.O_TRUNC
+	} else {
+		// TODO index file
+	}
+
+	f, err := os.OpenFile(fName, fileMode, 0666)
 	if err != nil {
 		return err
 	}
@@ -44,10 +59,6 @@ func Setup(fName string) error {
 	csvReader = csv.NewReader(storage)
 	csvWriter = csv.NewWriter(storage)
 
-	http.HandleFunc("/list", ListCompaniesHandler)
-	http.HandleFunc("/add", AddCompanyHandler)
-	http.HandleFunc("/delete", DelCompanyHandler)
-	// TODO register handlers
 	return nil
 }
 
