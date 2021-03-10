@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
@@ -89,6 +93,45 @@ func TestDelCompany(t *testing.T) {
 	assert.Nil(t, err, "ListCompanies")
 
 	assert.ElementsMatch(t, left, compsFound)
+}
+
+// ~0.28 seconds, 35714 rps for 10 000 reqs
+func TestTimeToAddCompanies10000(t *testing.T) {
+	err := Setup("test-10000adds-companies.csv", true)
+	assert.Nil(t, err, "Setup failed")
+
+	comps := generateNCompanies(10000)
+
+	handler := http.HandlerFunc(AddCompanyHandler)
+
+	timeSpend := map[int]time.Duration{}
+	start := time.Now()
+	for i := range comps {
+		payload, err := json.Marshal(comps[i])
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		rr := httptest.NewRecorder()
+		req, err := http.NewRequest("POST", "/", bytes.NewBuffer(payload))
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		startNth := time.Now()
+		handler.ServeHTTP(rr, req)
+		timeSpend[i] = time.Since(startNth)
+		// Check the status code is what we expect.
+		if status := rr.Code; status != http.StatusOK {
+			t.Errorf("handler returned wrong status code: got %v want %v",
+				status, http.StatusOK)
+			return
+		}
+	}
+	fmt.Printf("Add %d companies took: %f s\n", len(comps), time.Since(start).Seconds())
+	for k, v := range timeSpend {
+		fmt.Println("Nth: ", k, "duration: ", v.Microseconds(), "microsecond")
+	}
 }
 
 // ~14.5 microseconds
