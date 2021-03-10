@@ -154,7 +154,7 @@ func BenchmarkListCompany(b *testing.B) {
 func generateNCompanies(n int) []Company {
 	var comps []Company
 
-	for i := 0; i < 20; i++ {
+	for i := 0; i < n; i++ {
 		id := 123456789000 + i
 		comps = append(comps,
 			Company{
