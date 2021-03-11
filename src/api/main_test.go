@@ -28,10 +28,10 @@ func TestListCompanies(t *testing.T) {
 	assert.Nil(t, err, "file Write failed")
 	f.Sync()
 
-	err = Setup(f.Name(), false)
+	storage, err := NewStorage(f.Name(), false)
 	assert.Nil(t, err, "Setup failed")
 
-	comps, err := ListCompanies()
+	comps, err := storage.ListCompanies()
 	assert.Nil(t, err, "ListCompanies failed")
 
 	ids := []string{
@@ -46,33 +46,33 @@ func TestListCompanies(t *testing.T) {
 }
 
 func TestAddCompany(t *testing.T) {
-	err := Setup("test-add-companies.csv", true)
+	storage, err := NewStorage("test-add-companies.csv", true)
 	assert.Nil(t, err, "Setup failed")
 
 	comps := generateNCompanies(20)
 
 	for i := range comps {
-		err = AddCompany(&comps[i])
+		err = storage.AddCompany(&comps[i])
 		assert.Nil(t, err, "AddCompany failed")
 	}
 	// update
 	comps[1].Name = "NameChanged"
-	err = AddCompany(&comps[1])
+	err = storage.AddCompany(&comps[1])
 	assert.Nil(t, err, "AddCompany failed")
 
-	compsFound, err := ListCompanies()
+	compsFound, err := storage.ListCompanies()
 	assert.Nil(t, err, "ListCompanies")
 
 	assert.ElementsMatch(t, comps, compsFound)
 }
 
 func TestDelCompany(t *testing.T) {
-	err := Setup("test-del-companies.csv", true)
+	storage, err := NewStorage("test-del-companies.csv", true)
 	assert.Nil(t, err, "Setup failed")
 
 	comps := generateNCompanies(20)
 	for i := range comps {
-		err = AddCompany(&comps[i])
+		err = storage.AddCompany(&comps[i])
 		assert.Nil(t, err, "AddCompany error")
 	}
 
@@ -83,13 +83,11 @@ func TestDelCompany(t *testing.T) {
 			left = append(left, comps[i])
 			continue
 		}
-		start := time.Now()
-		err = DeleteCompany(&comps[i])
-		fmt.Println("time del", time.Since(start))
+		err = storage.DeleteCompany(&comps[i])
 		assert.Nil(t, err, "DeleteCompany error")
 	}
 
-	compsFound, err := ListCompanies()
+	compsFound, err := storage.ListCompanies()
 	assert.Nil(t, err, "ListCompanies")
 
 	assert.ElementsMatch(t, left, compsFound)
@@ -97,7 +95,8 @@ func TestDelCompany(t *testing.T) {
 
 // ~0.28 seconds, 35714 rps for 10 000 reqs
 func TestTimeToAddCompanies10000(t *testing.T) {
-	err := Setup("test-10000adds-companies.csv", true)
+	var err error
+	storage, err = NewStorage("test-10000adds-companies.csv", true)
 	assert.Nil(t, err, "Setup failed")
 
 	comps := generateNCompanies(10000)
@@ -129,27 +128,30 @@ func TestTimeToAddCompanies10000(t *testing.T) {
 		}
 	}
 	fmt.Printf("Add %d companies took: %f s\n", len(comps), time.Since(start).Seconds())
-	for k, v := range timeSpend {
-		fmt.Println("Nth: ", k, "duration: ", v.Microseconds(), "microsecond")
+	averageTime := 0.0
+	for _, v := range timeSpend {
+		averageTime += float64(v.Microseconds())
 	}
+	fmt.Printf("Average duration: %f microsecond\n ", averageTime/float64(len(timeSpend)))
+
 }
 
 // ~14.5 microseconds
 func BenchmarkDelCompany(b *testing.B) {
-	err := Setup("test-del-companies.csv", true)
+	storage, err := NewStorage("test-del-companies.csv", true)
 	assert.Nil(b, err, "Setup failed")
 
 	comps := generateNCompanies(20)
 	for i := range comps {
-		err = AddCompany(&comps[i])
+		err = storage.AddCompany(&comps[i])
 		assert.Nil(b, err, "AddCompany error")
 	}
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		err = DeleteCompany(&comps[7])
+		err = storage.DeleteCompany(&comps[7])
 		b.StopTimer()
-		err = AddCompany(&comps[7])
+		err = storage.AddCompany(&comps[7])
 		assert.Nil(b, err, "AddCompany error")
 		b.StartTimer()
 	}
@@ -158,37 +160,37 @@ func BenchmarkDelCompany(b *testing.B) {
 
 // ~3 microseconds
 func BenchmarkAddCompany(b *testing.B) {
-	err := Setup("test-add-companies.csv", true)
+	storage, err := NewStorage("test-add-companies.csv", true)
 	assert.Nil(b, err, "Setup failed")
 
 	comps := generateNCompanies(20)
 	for i := range comps {
-		err = AddCompany(&comps[i])
+		err = storage.AddCompany(&comps[i])
 		assert.Nil(b, err, "AddCompany error")
 	}
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		err = AddCompany(&comps[7])
+		err = storage.AddCompany(&comps[7])
 	}
 	assert.Nil(b, err)
 }
 
 // ~53 microseconds
 func BenchmarkListCompany(b *testing.B) {
-	err := Setup("test-list-companies.csv", true)
+	storage, err := NewStorage("test-list-companies.csv", true)
 	assert.Nil(b, err, "Setup failed")
 
 	comps := generateNCompanies(100)
 	for i := range comps {
-		err = AddCompany(&comps[i])
+		err = storage.AddCompany(&comps[i])
 		assert.Nil(b, err, "AddCompany error")
 	}
 	var res []Company
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		res, err = ListCompanies()
+		res, err = storage.ListCompanies()
 	}
 	assert.Nil(b, err)
 	assert.Equal(b, len(comps), len(res))

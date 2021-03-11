@@ -46,16 +46,13 @@ import (
 */
 
 var (
-	mu           sync.RWMutex
-	storageIndex Index
-	storage      io.ReadWriteSeeker
-	csvReader    *csv.Reader
-	csvWriter    *csv.Writer
+	storage *Storage
 )
 
 func main() {
+	var err error
 	// truncates file for test pugrposes
-	err := Setup("companies.csv", true)
+	storage, err = NewStorage("companies.csv", true)
 	if err != nil {
 		fmt.Println("OpenFile error", err.Error())
 		os.Exit(1)
@@ -68,11 +65,7 @@ func main() {
 			select {
 			case <-sigterm:
 				fmt.Println("shutdown wait ...")
-				mu.Lock()
-				csvWriter.Flush()
-				f := storage.(*os.File)
-				f.Sync()
-				f.Close()
+				storage.Close()
 				os.Exit(0)
 			}
 		}
@@ -86,39 +79,8 @@ func main() {
 	log.Fatalln(http.ListenAndServe(":8080", nil))
 }
 
-// TODO generate index if truncate false
-func Setup(fName string, truncate bool) error {
-	storageIndex.ByINN = map[string]int64{}
-	storageIndex.ByName = map[string]int64{}
-
-	// TODO should not truncate file
-	fileMode := os.O_RDWR | os.O_CREATE
-	if truncate {
-		fileMode |= os.O_TRUNC
-	} else {
-		// TODO index file
-	}
-
-	f, err := os.OpenFile(fName, fileMode, 0666)
-	if err != nil {
-		return err
-	}
-	storage = f
-	csvReader = csv.NewReader(storage)
-	csvWriter = csv.NewWriter(storage)
-
-	return nil
-}
-
 const MaxFieldSize = 100
 const RecordSize int64 = 12 + 100*4 + 5 // total length of chars in record
-
-// by company inn and name
-type Index struct {
-	NumRecords int64
-	ByINN      map[string]int64 // offset of start of a record
-	ByName     map[string]int64 // offset of start of a record
-}
 
 // properties has max lengths of 100 chars, inn has 12 chars
 type Company struct {
@@ -172,124 +134,194 @@ func (comp *Company) CSVUnmarshal(data []string) error {
 	return comp.Validate()
 }
 
-// TODO handle quit signal and panics?
-func AddCompany(comp *Company) error {
-	offset, ok := storageIndex.ByINN[comp.INN]
-	// TODO move to storage api
-	mu.Lock()
-	defer mu.Unlock()
-	if !ok {
-		// append to end of file
-		_, err := storage.Seek(0, io.SeekEnd)
-		if err != nil {
-			return err
-		}
+// by company inn and name
+type index struct {
+	ByINN  map[string]int64 // offset of start of a record
+	ByName map[string]int64 // offset of start of a record
+}
+
+type Storage struct {
+	mu        sync.Mutex
+	file      io.ReadWriteSeeker
+	index     index
+	csvReader *csv.Reader
+	csvWriter *csv.Writer
+}
+
+func NewStorage(fName string, truncate bool) (*Storage, error) {
+	store := new(Storage)
+	store.index.ByINN = map[string]int64{}
+	store.index.ByName = map[string]int64{}
+
+	// TODO should not truncate file
+	fileMode := os.O_RDWR | os.O_CREATE
+	if truncate {
+		fileMode |= os.O_TRUNC
 	} else {
-		// update in previous position
-		_, err := storage.Seek(offset, io.SeekStart)
-		if err != nil {
-			return err
-		}
+		// TODO index file
 	}
+
+	f, err := os.OpenFile(fName, fileMode, 0666)
+	if err != nil {
+		return nil, err
+	}
+	store.file = f
+	store.csvReader = csv.NewReader(f)
+	store.csvWriter = csv.NewWriter(f)
+
+	return store, nil
+}
+
+func (store *Storage) readAt(offset int64, whence int) (Company, error) {
+	var comp Company
+
+	offset, err := store.file.Seek(offset, whence)
+	if err != nil {
+		return comp, err
+	}
+	record, err := store.csvReader.Read()
+	if err != nil {
+		return comp, err
+	}
+
+	err = comp.CSVUnmarshal(record)
+
+	return comp, err
+}
+
+func (store *Storage) writeAt(comp *Company, offset int64, whence int) error {
 	data, err := comp.CSVMarshal()
 	if err != nil {
 		return err
 	}
-	//	csvWriter := csv.NewWriter(storage)
-	err = csvWriter.Write(data)
+
+	_, err = store.file.Seek(offset, whence)
 	if err != nil {
 		return err
 	}
-	csvWriter.Flush()
-	if !ok {
-		// add to index
-		newOffset := RecordSize * int64(len(storageIndex.ByINN))
-		storageIndex.ByINN[comp.INN] = newOffset
-		storageIndex.ByName[comp.Name] = newOffset
+	err = store.csvWriter.Write(data)
+	if err != nil {
+		return err
 	}
-	return err
+	store.csvWriter.Flush()
+	return nil
 }
 
-func DeleteCompany(comp *Company) error {
+var ErrMissingID = errors.New("missing inn/name")
+var ErrNotFound = errors.New("not found")
+
+func (store *Storage) findCompanyOffset(comp *Company) (int64, error) {
 	var offset int64
 	var ok bool
+
 	if len(comp.INN) > 0 {
-		offset, ok = storageIndex.ByINN[comp.INN]
+		offset, ok = store.index.ByINN[comp.INN]
 	} else if len(comp.Name) > 0 {
-		offset, ok = storageIndex.ByName[comp.Name]
+		offset, ok = store.index.ByName[comp.Name]
 	} else {
-		return errors.New("missing inn/name")
+		return offset, ErrMissingID
+	}
+	if !ok {
+		return offset, ErrNotFound
+	}
+	return offset, nil
+}
+
+func (store *Storage) Close() error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	store.csvWriter.Flush()
+	f := store.file.(*os.File)
+	f.Sync()
+	return f.Close()
+}
+
+func (store *Storage) AddCompany(comp *Company) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	offset, err := store.findCompanyOffset(comp)
+
+	whence := io.SeekStart
+	if err != nil {
+		if err == ErrNotFound {
+			// append to end of file
+			offset = 0
+			whence = io.SeekEnd
+		} else {
+			return err
+		}
 	}
 
-	if !ok {
-		// do nothing
-		return nil
+	errWrite := store.writeAt(comp, offset, whence)
+	if errWrite != nil {
+		return errWrite
 	}
-	mu.Lock()
-	defer mu.Unlock()
+
+	if err != nil && err == ErrNotFound {
+		// add to index
+		newOffset := RecordSize * int64(len(store.index.ByINN))
+		store.index.ByINN[comp.INN] = newOffset
+		store.index.ByName[comp.Name] = newOffset
+	}
+	return nil
+}
+
+func (store *Storage) DeleteCompany(comp *Company) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	offset, err := store.findCompanyOffset(comp)
+	if err != nil {
+		return err
+	}
 
 	// read last record
-	offsetLast, err := storage.Seek(-RecordSize, io.SeekEnd)
-	if err != nil {
-		return err
-	}
-	record, err := csvReader.Read()
+	compLast, err := store.readAt(-RecordSize, io.SeekEnd)
 	if err != nil {
 		return err
 	}
 
-	var compLast Company
-	err = compLast.CSVUnmarshal(record)
-	if err != nil {
-		return err
+	if comp.INN != compLast.INN {
+		// overwrite with last record
+		err = store.writeAt(&compLast, offset, io.SeekStart)
+		if err != nil {
+			return err
+		}
+		// update index
+		store.index.ByINN[compLast.INN] = offset
+		store.index.ByName[compLast.Name] = offset
 	}
-
 	// remove from index
-	delete(storageIndex.ByINN, comp.INN)
-	delete(storageIndex.ByName, comp.Name)
-	// update index
-	storageIndex.ByINN[compLast.INN] = offset
-	storageIndex.ByName[compLast.Name] = offset
+	delete(store.index.ByINN, comp.INN)
+	delete(store.index.ByName, comp.Name)
 
-	// overwrite
-	_, err = storage.Seek(offset, io.SeekStart)
-	if err != nil {
-		return err
-	}
-
-	err = csvWriter.Write(record)
-	if err != nil {
-		return err
-	}
-	csvWriter.Flush()
 	// truncate file
-	f := storage.(*os.File)
-	f.Seek(0, io.SeekStart)      // set to beginning
-	err = f.Truncate(offsetLast) //RecordSize * int64(len(storageIndex.ByINN)))
+	f := store.file.(*os.File)
+	f.Seek(0, io.SeekStart) // set to beginning
+	offsetLast := RecordSize * int64(len(store.index.ByINN))
+	err = f.Truncate(offsetLast)
 	return err
 }
 
 // TODO add pagination
-func ListCompanies() ([]Company, error) {
-	var comps []Company
-
+func (store *Storage) ListCompanies() ([]Company, error) {
 	var err error
 	var record []string
-	mu.RLock()
-	start := true
-	defer func() {
-		if r := recover(); r != nil && start {
-			mu.RUnlock()
-		}
-	}()
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
 	// set cursor to start of file
-	_, err = storage.Seek(0, io.SeekStart)
+	_, err = store.file.Seek(0, io.SeekStart)
 	if err != nil {
-		mu.RUnlock()
 		return nil, err
 	}
+	comps := make([]Company, 0, len(store.index.ByINN))
+	var comp Company
 	for {
-		record, err = csvReader.Read()
+		record, err = store.csvReader.Read()
 		if err == io.EOF {
 			err = nil
 			break
@@ -298,15 +330,13 @@ func ListCompanies() ([]Company, error) {
 			break
 		}
 
-		var comp Company
 		err = comp.CSVUnmarshal(record)
 		if err != nil {
 			break
 		}
 		comps = append(comps, comp)
 	}
-	mu.RUnlock()
-	start = false
+
 	return comps, err
 }
 
@@ -315,7 +345,7 @@ func ListCompaniesHandler(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	comps, err := ListCompanies()
+	comps, err := storage.ListCompanies()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -331,24 +361,28 @@ func ListCompaniesHandler(w http.ResponseWriter, r *http.Request) {
 	return
 }
 
-func AddCompanyHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.NotFound(w, r)
-		return
-	}
-	data, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
+func getCompanyFromReq(r *http.Request) (Company, error) {
 	var comp Company
-	err = json.Unmarshal(data, &comp)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+	if r.Method != http.MethodPost {
+		return comp, errors.New("Wrong method")
 	}
 
-	err = AddCompany(&comp)
+	data, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		return comp, err
+	}
+
+	err = json.Unmarshal(data, &comp)
+	return comp, err
+}
+
+func AddCompanyHandler(w http.ResponseWriter, r *http.Request) {
+	comp, err := getCompanyFromReq(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	err = storage.AddCompany(&comp)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -357,23 +391,13 @@ func AddCompanyHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func DelCompanyHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.NotFound(w, r)
-		return
-	}
-	data, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	var comp Company
-	err = json.Unmarshal(data, &comp)
+	comp, err := getCompanyFromReq(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	err = DeleteCompany(&comp)
+	err = storage.DeleteCompany(&comp)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
