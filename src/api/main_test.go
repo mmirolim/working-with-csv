@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,18 +14,50 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestListCompanies(t *testing.T) {
-	// write data
-	data := `123456789000,Name123456789000                                                                                    ,Phone123456789000                                                                                   ,Address123456789000                                                                                 ,IndividualSomethingBigMore123456789000                                                              
+const (
+	sampleData = `123456789000,Name123456789000                                                                                    ,Phone123456789000                                                                                   ,Address123456789000                                                                                 ,IndividualSomethingBigMore123456789000                                                              
 123456789001,Name123456789001                                                                                    ,Phone123456789001                                                                                   ,Address123456789001                                                                                 ,IndividualSomethingBigMore123456789001                                                              
 123456789002,Name123456789002                                                                                    ,Phone123456789002                                                                                   ,Address123456789002                                                                                 ,IndividualSomethingBigMore123456789002                                                              
 123456789003,Name123456789003                                                                                    ,Phone123456789003                                                                                   ,Address123456789003                                                                                 ,IndividualSomethingBigMore123456789003                                                              
 `
+)
+
+func TestNewStorage(t *testing.T) {
 	f, err := os.CreateTemp("", "*")
 	assert.Nil(t, err, "CreateTemp failed")
 	defer os.Remove(f.Name())
 
-	_, err = f.Write([]byte(data))
+	_, err = f.Write([]byte(sampleData))
+	assert.Nil(t, err, "file Write failed")
+	f.Sync()
+
+	storage, err := NewStorage(f.Name(), false)
+	assert.Nil(t, err, "Setup failed")
+	assert.NotNil(t, storage, "Storage is nil")
+
+	storage.mu.Lock()
+	defer storage.mu.Unlock()
+
+	// test build index
+	for inn, offset := range storage.index.ByINN {
+		comp, err := storage.readAt(offset, io.SeekStart)
+		assert.Nil(t, err, "readAt failed")
+		assert.Equal(t, comp.INN, inn, "wrong offset")
+	}
+	for name, offset := range storage.index.ByName {
+		comp, err := storage.readAt(offset, io.SeekStart)
+		assert.Nil(t, err, "readAt failed")
+		assert.Equal(t, comp.Name, name, "wrong offset")
+	}
+}
+
+func TestListCompanies(t *testing.T) {
+	// write data
+	f, err := os.CreateTemp("", "*")
+	assert.Nil(t, err, "CreateTemp failed")
+	defer os.Remove(f.Name())
+
+	_, err = f.Write([]byte(sampleData))
 	assert.Nil(t, err, "file Write failed")
 	f.Sync()
 

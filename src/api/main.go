@@ -157,8 +157,6 @@ func NewStorage(fName string, truncate bool) (*Storage, error) {
 	fileMode := os.O_RDWR | os.O_CREATE
 	if truncate {
 		fileMode |= os.O_TRUNC
-	} else {
-		// TODO index file
 	}
 
 	f, err := os.OpenFile(fName, fileMode, 0666)
@@ -169,6 +167,36 @@ func NewStorage(fName string, truncate bool) (*Storage, error) {
 	store.csvReader = csv.NewReader(f)
 	store.csvWriter = csv.NewWriter(f)
 
+	if !truncate {
+		fmt.Println("generate index")
+		store.mu.Lock()
+		defer store.mu.Unlock()
+
+		// set cursor to start of file
+		_, err = store.file.Seek(0, io.SeekStart)
+		if err != nil {
+			return nil, err
+		}
+		var comp Company
+		var offset int64 = 0
+		for {
+			record, err := store.csvReader.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, err
+			}
+
+			err = comp.CSVUnmarshal(record)
+			if err != nil {
+				return nil, err
+			}
+			store.index.ByINN[comp.INN] = offset
+			store.index.ByName[comp.Name] = offset
+			offset += RecordSize
+		}
+	}
 	return store, nil
 }
 
