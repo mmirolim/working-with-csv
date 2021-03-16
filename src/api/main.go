@@ -144,7 +144,6 @@ type Storage struct {
 	mu        sync.Mutex
 	file      io.ReadWriteSeeker
 	index     index
-	csvReader *csv.Reader
 	csvWriter *csv.Writer
 }
 
@@ -164,7 +163,6 @@ func NewStorage(fName string, truncate bool) (*Storage, error) {
 		return nil, err
 	}
 	store.file = f
-	store.csvReader = csv.NewReader(f)
 	store.csvWriter = csv.NewWriter(f)
 
 	if !truncate {
@@ -177,10 +175,11 @@ func NewStorage(fName string, truncate bool) (*Storage, error) {
 		if err != nil {
 			return nil, err
 		}
+		reader := csv.NewReader(store.file)
 		var comp Company
 		var offset int64 = 0
 		for {
-			record, err := store.csvReader.Read()
+			record, err := reader.Read()
 			if err == io.EOF {
 				break
 			}
@@ -202,18 +201,19 @@ func NewStorage(fName string, truncate bool) (*Storage, error) {
 
 func (store *Storage) readAt(offset int64, whence int) (Company, error) {
 	var comp Company
-
-	offset, err := store.file.Seek(offset, whence)
+	file := store.file.(*os.File)
+	_, err := file.Seek(offset, whence)
 	if err != nil {
 		return comp, err
 	}
-	record, err := store.csvReader.Read()
+	// TODO can be optimised
+	r := csv.NewReader(file)
+	record, err := r.Read()
 	if err != nil {
 		return comp, err
 	}
 
 	err = comp.CSVUnmarshal(record)
-
 	return comp, err
 }
 
@@ -347,9 +347,10 @@ func (store *Storage) ListCompanies() ([]Company, error) {
 		return nil, err
 	}
 	comps := make([]Company, 0, len(store.index.ByINN))
+	reader := csv.NewReader(store.file)
 	var comp Company
 	for {
-		record, err = store.csvReader.Read()
+		record, err = reader.Read()
 		if err == io.EOF {
 			err = nil
 			break

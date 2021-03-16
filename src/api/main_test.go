@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,6 +23,41 @@ const (
 `
 )
 
+func TestReadAt(t *testing.T) {
+	f, err := os.CreateTemp("", "*")
+	assert.Nil(t, err, "CreateTemp failed")
+	defer os.Remove(f.Name())
+
+	_, err = f.Write([]byte(sampleData))
+	assert.Nil(t, err, "file Write failed")
+	f.Sync()
+
+	storage, err := NewStorage(f.Name(), false)
+	assert.Nil(t, err, "Setup failed")
+	assert.NotNil(t, storage, "Storage is nil")
+
+	// test build index
+	var offsets []int64
+	for _, v := range storage.index.ByName {
+		offsets = append(offsets, v)
+	}
+	innByOffset := func(o int64) string {
+		for k, v := range storage.index.ByINN {
+			if v == o {
+				return k
+			}
+		}
+		return "NotFoundOffsetByInn"
+	}
+	// TODO test write
+	for i := 0; i < 50; i++ {
+		offset := offsets[rand.Intn(len(offsets))]
+		comp, err := storage.readAt(offset, io.SeekStart)
+		assert.Nil(t, err, "readAt failed")
+		assert.Equal(t, comp.INN, innByOffset(offset))
+	}
+}
+
 func TestNewStorage(t *testing.T) {
 	f, err := os.CreateTemp("", "*")
 	assert.Nil(t, err, "CreateTemp failed")
@@ -35,10 +71,12 @@ func TestNewStorage(t *testing.T) {
 	assert.Nil(t, err, "Setup failed")
 	assert.NotNil(t, storage, "Storage is nil")
 
-	storage.mu.Lock()
-	defer storage.mu.Unlock()
-
 	// test build index
+	var offsets []int64
+	for _, v := range storage.index.ByName {
+		offsets = append(offsets, v)
+	}
+
 	for inn, offset := range storage.index.ByINN {
 		comp, err := storage.readAt(offset, io.SeekStart)
 		assert.Nil(t, err, "readAt failed")
@@ -126,7 +164,7 @@ func TestDelCompany(t *testing.T) {
 	assert.ElementsMatch(t, left, compsFound)
 }
 
-// ~0.28 seconds, 35714 rps for 10 000 reqs
+// ~0.1 seconds, 100000 rps for 10 000 reqs
 func TestTimeToAddCompanies10000(t *testing.T) {
 	var err error
 	storage, err = NewStorage("test-10000adds-companies.csv", true)
@@ -169,7 +207,7 @@ func TestTimeToAddCompanies10000(t *testing.T) {
 
 }
 
-// ~14.5 microseconds
+// ~14 microseconds
 func BenchmarkDelCompany(b *testing.B) {
 	storage, err := NewStorage("test-del-companies.csv", true)
 	assert.Nil(b, err, "Setup failed")
@@ -209,7 +247,7 @@ func BenchmarkAddCompany(b *testing.B) {
 	assert.Nil(b, err)
 }
 
-// ~53 microseconds
+// ~228 microseconds
 func BenchmarkListCompany(b *testing.B) {
 	storage, err := NewStorage("test-list-companies.csv", true)
 	assert.Nil(b, err, "Setup failed")
